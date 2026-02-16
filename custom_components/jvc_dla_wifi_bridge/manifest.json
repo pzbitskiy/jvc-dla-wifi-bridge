@@ -1,0 +1,15 @@
+{
+  "domain": "jvc_dla_wifi_bridge",
+  "name": "JVC DLA WiFi Bridge",
+  "version": "0.1.0",
+  "documentation": "https://github.com/pzbitskiy/jvc-dla-wifi-bridge",
+  "integration_type": "hub",
+  "config_flow": true,
+  "iot_class": "local_push",
+  "codeowners": [
+    "@pzbitskiy"
+  ],
+  "loggers": [
+    "custom_components.jvc_dla_wifi_bridge"
+  ]
+}

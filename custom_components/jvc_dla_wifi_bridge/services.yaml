@@ -1,0 +1,27 @@
+turn_on:
+  name: Turn On
+  description: Send the projector power on command.
+  target:
+    entity:
+      integration: jvc_dla_wifi_bridge
+
+turn_off:
+  name: Turn Off
+  description: Send the projector power off command.
+  target:
+    entity:
+      integration: jvc_dla_wifi_bridge
+
+set_hdmi1:
+  name: Set HDMI1
+  description: Switch projector input to HDMI1 (requires cached power-on state).
+  target:
+    entity:
+      integration: jvc_dla_wifi_bridge
+
+set_hdmi2:
+  name: Set HDMI2
+  description: Switch projector input to HDMI2 (requires cached power-on state).
+  target:
+    entity:
+      integration: jvc_dla_wifi_bridge

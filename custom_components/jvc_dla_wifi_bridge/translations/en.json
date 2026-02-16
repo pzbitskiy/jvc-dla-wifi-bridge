@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up JVC DLA WiFi Bridge",
+        "description": "Configure Home Assistant TCP server for SH-B35W projector bridge.",
+        "data": {
+          "name": "Name",
+          "listen_host": "Listen host",
+          "listen_port": "Listen port",
+          "log_traffic": "Log RX/TX traffic",
+          "ready_ttl_sec": "Ready cache TTL (seconds)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Integration is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure JVC DLA WiFi Bridge",
+        "data": {
+          "name": "Name",
+          "listen_host": "Listen host",
+          "listen_port": "Listen port",
+          "log_traffic": "Log RX/TX traffic",
+          "ready_ttl_sec": "Ready cache TTL (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "power": {
+        "name": "Power"
+      }
+    },
+    "select": {
+      "input": {
+        "name": "Input"
+      }
+    },
+    "binary_sensor": {
+      "ready": {
+        "name": "Ready"
+      }
+    }
+  }
+}
