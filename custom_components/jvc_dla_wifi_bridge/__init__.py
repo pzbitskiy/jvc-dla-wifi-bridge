@@ -8,7 +8,7 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry, ConfigEntryState
 from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
@@ -107,6 +107,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     runtime = JvcBridgeRuntimeData(bridge=bridge, coordinator=coordinator)
+    entry.runtime_data = runtime
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -124,6 +125,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return False
 
     runtime = hass.data[DOMAIN].pop(entry.entry_id)
+    entry.runtime_data = None
     await runtime.bridge.async_stop()
 
     if not hass.data[DOMAIN]:
@@ -232,8 +234,12 @@ def _resolve_target_runtimes(
     call: ServiceCall,
 ) -> list[JvcBridgeRuntimeData]:
     """Resolve runtime objects from service target entity_id or singleton entry."""
-    runtimes: dict[str, JvcBridgeRuntimeData] = hass.data.get(DOMAIN, {})
+    runtimes = _collect_runtimes(hass)
     if not runtimes:
+        if hass.config_entries.async_entries(DOMAIN):
+            raise HomeAssistantError(
+                "JVC DLA WiFi Bridge is configured but not loaded; reload integration"
+            )
         raise HomeAssistantError("No configured JVC DLA WiFi Bridge entries")
 
     target_entity_ids = call.data.get(ATTR_ENTITY_ID)
@@ -254,10 +260,33 @@ def _resolve_target_runtimes(
 
         entry_id = reg_entry.config_entry_id
         if entry_id is None or entry_id not in runtimes:
-            raise HomeAssistantError(
-                f"Entity {entity_id} does not belong to {DOMAIN}"
+            config_entry = (
+                hass.config_entries.async_get_entry(entry_id) if entry_id else None
             )
+            if config_entry and config_entry.domain == DOMAIN:
+                if config_entry.state is not ConfigEntryState.LOADED:
+                    raise HomeAssistantError(
+                        f"Entity {entity_id} belongs to {DOMAIN}, but the integration "
+                        "entry is not loaded"
+                    )
+                raise HomeAssistantError(
+                    f"Entity {entity_id} belongs to {DOMAIN}, but runtime is unavailable; "
+                    "reload integration"
+                )
+            raise HomeAssistantError(f"Entity {entity_id} does not belong to {DOMAIN}")
 
         entry_ids.add(entry_id)
 
     return [runtimes[entry_id] for entry_id in entry_ids]
+
+
+def _collect_runtimes(hass: HomeAssistant) -> dict[str, JvcBridgeRuntimeData]:
+    """Collect runtime objects from hass.data and loaded config entries."""
+    runtime_map: dict[str, JvcBridgeRuntimeData] = dict(hass.data.get(DOMAIN, {}))
+
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        runtime = getattr(entry, "runtime_data", None)
+        if isinstance(runtime, JvcBridgeRuntimeData):
+            runtime_map.setdefault(entry.entry_id, runtime)
+
+    return runtime_map

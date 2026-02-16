@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -33,6 +36,7 @@ class JvcBridgeReadyBinarySensor(JvcBridgeEntity, BinarySensorEntity):
 
     _attr_name = "Ready"
     _attr_translation_key = "ready"
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
 
     def __init__(self, coordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "ready")

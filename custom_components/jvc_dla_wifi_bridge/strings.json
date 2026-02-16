@@ -31,6 +31,22 @@
       }
     }
   },
+  "device_automation": {
+    "action_type": {
+      "turn_on": "Turn on projector",
+      "turn_off": "Turn off projector",
+      "set_hdmi1": "Set input to HDMI1",
+      "set_hdmi2": "Set input to HDMI2"
+    },
+    "condition_type": {
+      "is_ready": "Projector is ready",
+      "is_not_ready": "Projector is not ready"
+    },
+    "trigger_type": {
+      "ready_turned_on": "Projector became ready",
+      "ready_turned_off": "Projector became not ready"
+    }
+  },
   "entity": {
     "switch": {
       "power": {
