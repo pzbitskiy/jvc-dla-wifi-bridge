@@ -17,19 +17,29 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CMD_HDMI1,
     CMD_HDMI2,
+    CMD_QUERY_INPUT,
+    CMD_QUERY_POWER,
     CMD_READY,
     CMD_TURN_OFF,
     CMD_TURN_ON,
     COMMAND_PAYLOADS,
+    INPUT_CODES,
     INPUT_HDMI1,
     INPUT_HDMI2,
+    POWER_STATE_ON,
     READY_PROBE_INTERVAL_SEC,
     READY_PROBE_TIMEOUT_SEC,
     RESPONSE_COMMANDS,
+    RESULT_ACK,
+    RESULT_DATA,
+    STATUS_POLL_INTERVAL_SEC,
     UNIT_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Response frames are matched to requests by (result code, command code).
+WaiterKey = tuple[int, bytes]
 
 
 class JvcBridgeError(HomeAssistantError):
@@ -68,12 +78,14 @@ class JvcBridgeServer:
         log_traffic: bool,
         ready_ttl_sec: int,
         ready_probe_interval_sec: int = READY_PROBE_INTERVAL_SEC,
+        status_poll_interval_sec: int = STATUS_POLL_INTERVAL_SEC,
     ) -> None:
         self.listen_host = listen_host
         self.listen_port = listen_port
         self._log_traffic = log_traffic
         self._ready_ttl_sec = ready_ttl_sec
         self._ready_probe_interval_sec = ready_probe_interval_sec
+        self._status_poll_interval_sec = status_poll_interval_sec
 
         self._server: asyncio.AbstractServer | None = None
 
@@ -82,14 +94,17 @@ class JvcBridgeServer:
         self._reader_task: asyncio.Task[None] | None = None
 
         self._ready_probe_task: asyncio.Task[None] | None = None
+        self._status_poll_task: asyncio.Task[None] | None = None
 
         self._connection_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
-        self._probe_lock = asyncio.Lock()
+        self._request_lock = asyncio.Lock()
 
-        self._waiters: dict[bytes, Deque[asyncio.Future[bytes]]] = defaultdict(deque)
+        self._waiters: dict[WaiterKey, Deque[asyncio.Future[bytes]]] = defaultdict(deque)
 
         self._connected_client: str | None = None
+        # bumped by every operation command, status replies older than it are stale
+        self._command_seq = 0
         self._power_on: bool | None = None
         self._input_source: str | None = None
 
@@ -142,6 +157,10 @@ class JvcBridgeServer:
             self._async_ready_probe_loop(),
             name="jvc_dla_wifi_bridge_ready_probe",
         )
+        self._status_poll_task = asyncio.create_task(
+            self._async_status_poll_loop(),
+            name="jvc_dla_wifi_bridge_status_poll",
+        )
 
         _LOGGER.info(
             "Listening for SH-B35W TCP client on %s:%s",
@@ -151,11 +170,13 @@ class JvcBridgeServer:
 
     async def async_stop(self) -> None:
         """Stop TCP listener and clean up all runtime tasks."""
-        if self._ready_probe_task is not None:
-            self._ready_probe_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._ready_probe_task
-            self._ready_probe_task = None
+        for task in (self._ready_probe_task, self._status_poll_task):
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        self._ready_probe_task = None
+        self._status_poll_task = None
 
         if self._server is not None:
             self._server.close()
@@ -167,53 +188,89 @@ class JvcBridgeServer:
 
     async def async_turn_on(self) -> None:
         """Send power on command."""
-        await self._async_send_payload(COMMAND_PAYLOADS[CMD_TURN_ON], CMD_TURN_ON)
+        await self._async_send_command(CMD_TURN_ON)
         self._power_on = True
 
     async def async_turn_off(self) -> None:
         """Send power off command."""
-        await self._async_send_payload(COMMAND_PAYLOADS[CMD_TURN_OFF], CMD_TURN_OFF)
+        await self._async_send_command(CMD_TURN_OFF)
         self._power_on = False
 
     async def async_set_hdmi1(self) -> None:
         """Switch input to HDMI1 if cached power state allows it."""
         self._assert_can_switch_input()
-        await self._async_send_payload(COMMAND_PAYLOADS[CMD_HDMI1], CMD_HDMI1)
+        await self._async_send_command(CMD_HDMI1)
         self._input_source = INPUT_HDMI1
 
     async def async_set_hdmi2(self) -> None:
         """Switch input to HDMI2 if cached power state allows it."""
         self._assert_can_switch_input()
-        await self._async_send_payload(COMMAND_PAYLOADS[CMD_HDMI2], CMD_HDMI2)
+        await self._async_send_command(CMD_HDMI2)
         self._input_source = INPUT_HDMI2
 
     async def async_probe_ready(self) -> bool:
         """Send ready command and update readiness cache from response."""
-        async with self._probe_lock:
-            if not self.connected:
-                return False
+        if await self._async_request(CMD_READY, RESULT_ACK) is None:
+            return False
 
-            expected_cmd = RESPONSE_COMMANDS[CMD_READY]
-            waiter = self._register_waiter(expected_cmd)
+        self._last_ready_ok_monotonic = monotonic()
+        self._last_ready_ok_at = dt_util.utcnow()
+        return True
+
+    async def async_refresh_status(self) -> None:
+        """Query projector power state and, when powered on, its input source.
+
+        Cached values are kept when the projector does not answer, or when a
+        command was sent meanwhile: the reply may predate it.
+        """
+        seq = self._command_seq
+        power = await self._async_request(CMD_QUERY_POWER, RESULT_DATA)
+        if power is None or seq != self._command_seq:
+            return
+
+        self._power_on = power == POWER_STATE_ON
+        if not self._power_on:
+            # input can only be queried in power on state
+            self._input_source = None
+            return
+
+        source = await self._async_request(CMD_QUERY_INPUT, RESULT_DATA)
+        if source is not None and seq == self._command_seq:
+            self._input_source = INPUT_CODES.get(source)
+
+    async def _async_send_command(self, command_name: str) -> None:
+        """Send an operation command, superseding status queries in flight."""
+        self._command_seq += 1
+        await self._async_send_payload(COMMAND_PAYLOADS[command_name], command_name)
+
+    async def _async_request(self, command_name: str, result_code: int) -> bytes | None:
+        """Send a command and wait for its response frame with the given result code.
+
+        Return the response data, or None when not connected or not answered.
+        """
+        async with self._request_lock:
+            if not self.connected:
+                return None
+
+            key = (result_code, RESPONSE_COMMANDS[command_name])
+            waiter = self._register_waiter(key)
 
             try:
-                await self._async_send_payload(COMMAND_PAYLOADS[CMD_READY], CMD_READY)
-                await asyncio.wait_for(waiter, timeout=READY_PROBE_TIMEOUT_SEC)
+                await self._async_send_payload(COMMAND_PAYLOADS[command_name], command_name)
+                response = await asyncio.wait_for(waiter, timeout=READY_PROBE_TIMEOUT_SEC)
             except asyncio.TimeoutError:
-                self._remove_waiter(expected_cmd, waiter)
-                _LOGGER.debug("Ready probe timed out")
-                return False
+                self._remove_waiter(key, waiter)
+                _LOGGER.debug("No response to %s", command_name)
+                return None
             except JvcBridgeNotConnectedError:
-                self._remove_waiter(expected_cmd, waiter)
-                return False
+                self._remove_waiter(key, waiter)
+                return None
             except Exception:
-                self._remove_waiter(expected_cmd, waiter)
-                _LOGGER.exception("Unexpected error while probing projector readiness")
-                return False
+                self._remove_waiter(key, waiter)
+                _LOGGER.exception("Unexpected error while sending %s", command_name)
+                return None
 
-            self._last_ready_ok_monotonic = monotonic()
-            self._last_ready_ok_at = dt_util.utcnow()
-            return True
+            return response[3 + len(key[1]) : -1]
 
     async def _async_handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -240,7 +297,12 @@ class JvcBridgeServer:
             )
 
         _LOGGER.info("SH-B35W client connected: %s", connected_client)
-        asyncio.create_task(self.async_probe_ready())
+        asyncio.create_task(self._async_refresh_on_connect())
+
+    async def _async_refresh_on_connect(self) -> None:
+        """Probe readiness and fetch projector status for a new client."""
+        if await self.async_probe_ready():
+            await self.async_refresh_status()
 
     async def _async_reader_loop(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -297,6 +359,16 @@ class JvcBridgeServer:
                 await asyncio.sleep(self._ready_probe_interval_sec)
                 if self.connected:
                     await self.async_probe_ready()
+        except asyncio.CancelledError:
+            return
+
+    async def _async_status_poll_loop(self) -> None:
+        """Periodically refresh projector power and input while connected."""
+        try:
+            while True:
+                await asyncio.sleep(self._status_poll_interval_sec)
+                if self.connected:
+                    await self.async_refresh_status()
         except asyncio.CancelledError:
             return
 
@@ -371,15 +443,15 @@ class JvcBridgeServer:
 
         return (now_monotonic - value_monotonic) <= self._ready_ttl_sec
 
-    def _register_waiter(self, expected_cmd: bytes) -> asyncio.Future[bytes]:
-        """Add a response waiter for a specific command marker."""
+    def _register_waiter(self, key: WaiterKey) -> asyncio.Future[bytes]:
+        """Add a response waiter for a specific result code and command."""
         waiter: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
-        self._waiters[expected_cmd].append(waiter)
+        self._waiters[key].append(waiter)
         return waiter
 
-    def _remove_waiter(self, expected_cmd: bytes, waiter: asyncio.Future[bytes]) -> None:
+    def _remove_waiter(self, key: WaiterKey, waiter: asyncio.Future[bytes]) -> None:
         """Remove a waiter if still pending in waiter queue."""
-        queued = self._waiters.get(expected_cmd)
+        queued = self._waiters.get(key)
         if not queued:
             return
 
@@ -387,12 +459,19 @@ class JvcBridgeServer:
             queued.remove(waiter)
 
         if not queued:
-            self._waiters.pop(expected_cmd, None)
+            self._waiters.pop(key, None)
 
     def _resolve_waiters(self, response: bytes) -> None:
-        """Resolve one pending waiter whose expected command matches response."""
-        for expected_cmd, queued in list(self._waiters.items()):
+        """Resolve the oldest waiter for the response result code and command.
+
+        A query is answered with an ACK frame followed by a DATA frame with the
+        same command, so the result code is part of the match.
+        """
+        for (result_code, expected_cmd), queued in list(self._waiters.items()):
             if not queued:
+                continue
+
+            if response[0] != result_code:
                 continue
 
             if response[3 : 3 + len(expected_cmd)] != expected_cmd:
@@ -400,7 +479,7 @@ class JvcBridgeServer:
 
             waiter = queued.popleft()
             if not queued:
-                self._waiters.pop(expected_cmd, None)
+                self._waiters.pop((result_code, expected_cmd), None)
 
             if not waiter.done():
                 waiter.set_result(response)

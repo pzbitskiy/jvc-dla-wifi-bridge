@@ -11,10 +11,13 @@ Home Assistant custom integration for controlling a JVC DLA-RS40 projector over 
   - input HDMI1
   - input HDMI2
   - readiness probe (`ready` command)
+- Polls the projector power state and input source every 30 seconds,
+  so changes made with the IR remote show up in Home Assistant.
+  Input can be switched only when the projector reports it is powered on.
 - Exposes Home Assistant entities:
   - power switch
-  - input select
-  - ready binary sensor
+  - input select (`unknown` for inputs other than HDMI1/HDMI2, and while the projector is off)
+  - ready binary sensor (connectivity: whether the projector answers over the bridge)
 - Exposes services:
   - `jvc_dla_wifi_bridge.turn_on`
   - `jvc_dla_wifi_bridge.turn_off`

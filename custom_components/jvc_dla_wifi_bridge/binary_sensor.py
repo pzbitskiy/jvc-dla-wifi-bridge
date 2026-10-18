@@ -32,11 +32,11 @@ async def async_setup_entry(
 
 
 class JvcBridgeReadyBinarySensor(JvcBridgeEntity, BinarySensorEntity):
-    """Binary sensor indicating projector operational readiness."""
+    """Binary sensor showing whether the projector answers over the bridge."""
 
     _attr_name = "Ready"
     _attr_translation_key = "ready"
-    _attr_device_class = BinarySensorDeviceClass.RUNNING
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
 
     def __init__(self, coordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "ready")
