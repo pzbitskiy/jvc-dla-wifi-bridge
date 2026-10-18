@@ -28,6 +28,24 @@ Home Assistant custom integration for controlling a JVC DLA-RS40 projector over 
 
 This repository is HACS-compatible and publishes `jvc_dla_wifi_bridge.zip` release assets.
 
+## Manual installation
+
+1. Build the package:
+
+```bash
+./scripts/package_release.sh
+```
+
+2. Copy `dist/jvc_dla_wifi_bridge.zip` to Home Assistant (SSH add-on or Samba share).
+3. On Home Assistant, unpack it into the config directory (creates `config/custom_components/jvc_dla_wifi_bridge`, overwriting an older version):
+
+```bash
+unzip -o -d config/ jvc_dla_wifi_bridge.zip
+```
+
+4. Restart Home Assistant (Settings → System → Restart); reloading the integration does not pick up new code.
+5. First install only: Settings → Devices & services → Add integration → **JVC DLA WiFi Bridge**.
+
 ## SH-B35W serial settings
 
 Set the serial side of SH-B35W to match the projector:
