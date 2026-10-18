@@ -1,7 +1,7 @@
 {
   "domain": "jvc_dla_wifi_bridge",
   "name": "JVC DLA WiFi Bridge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "documentation": "https://github.com/pzbitskiy/jvc-dla-wifi-bridge",
   "integration_type": "hub",
   "config_flow": true,
